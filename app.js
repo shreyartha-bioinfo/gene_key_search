@@ -313,11 +313,26 @@ const NBR_BLOCKLIST = new Set([
 
 async function runNeighborhoodAnalysis(pmids, searchedGenes, apiKey) {
   const panel = document.getElementById('neighborhood-panel');
-  panel.innerHTML = '<p class="nbr-loading">&#x1F9EC; Analyzing gene neighborhood…</p>';
   panel.style.display = 'block';
 
-  // Pull candidates from already-fetched abstracts + titles (no extra API calls)
   const papers = window._papers || [];
+
+  // Fetch full text for PMC papers that haven't been loaded yet
+  const pmcPapers = papers.filter(p => p.pmcid && !p.fullTextContent);
+  if (pmcPapers.length) {
+    panel.innerHTML = `<p class="nbr-loading">&#x1F9EC; Fetching full text for ${pmcPapers.length} open-access paper(s)…</p>`;
+    const delay = apiKey ? 110 : 350;   // respect NCBI rate limits
+    for (let i = 0; i < pmcPapers.length; i++) {
+      if (i > 0) await new Promise(r => setTimeout(r, delay));
+      try {
+        pmcPapers[i].fullTextContent = await fetchFullTextContent(pmcPapers[i].pmcid, apiKey);
+      } catch { /* leave undefined; fall back to abstract */ }
+    }
+  }
+
+  panel.innerHTML = '<p class="nbr-loading">&#x1F9EC; Analyzing gene neighborhood…</p>';
+
+  // Pull candidates from full text (PMC) or abstract (fallback)
   const candidates = extractCandidates(papers, searchedGenes);
 
   if (!candidates.length) {
@@ -335,13 +350,27 @@ async function runNeighborhoodAnalysis(pmids, searchedGenes, apiKey) {
   }
 }
 
-// Scan titles + abstracts for gene-symbol-like tokens, tally per-paper frequency
+// Fetch PMC full text and return concatenated plain text (all section bodies)
+async function fetchFullTextContent(pmcid, apiKey) {
+  const url = buildUrl('efetch.fcgi', {
+    db: 'pmc', id: pmcid, rettype: 'full', retmode: 'xml',
+    ...(apiKey && { api_key: apiKey }),
+  });
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const sections = parsePmcXml(await res.text());
+  return sections.map(s => (s.title ? s.title + '\n' : '') + s.text).join('\n\n');
+}
+
+// Scan titles + full text (or abstract) for gene-symbol-like tokens, tally per-paper frequency
 function extractCandidates(papers, searchedGenes) {
   const searchedUpper = new Set(searchedGenes.map(g => g.toUpperCase()));
   const freq = {};
 
   papers.forEach(p => {
-    const text = (p.title || '') + ' ' + (p.abstract || '');
+    // Prefer full text when available (PMC open-access), otherwise fall back to abstract
+    const body = p.fullTextContent || p.abstract || '';
+    const text = (p.title || '') + ' ' + body;
     const seen = new Set();
     // Gene symbols: 2–8 chars, start with letter, uppercase letters/digits, no leading digits
     const matches = text.match(/\b[A-Z][A-Z0-9]{1,7}\b/g) || [];
