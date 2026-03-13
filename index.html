@@ -325,6 +325,100 @@
       color: #3fb950;
     }
 
+    /* Neighborhood panel */
+    #neighborhood-panel {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 12px;
+      padding: 22px 26px;
+      margin-bottom: 28px;
+    }
+
+    .nbr-loading, .nbr-empty {
+      font-size: 0.85rem;
+      color: #8b949e;
+    }
+
+    .nbr-header {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+
+    .nbr-title {
+      font-size: 1rem;
+      font-weight: 700;
+      color: #e2e8f0;
+    }
+
+    .nbr-subtitle {
+      font-size: 0.78rem;
+      color: #8b949e;
+    }
+
+    .nbr-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .nbr-chip {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #1c2128;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 5px 10px;
+      cursor: pointer;
+      overflow: hidden;
+      transition: border-color 0.2s, background 0.2s;
+      min-width: 64px;
+    }
+
+    .nbr-chip:hover {
+      border-color: #58a6ff;
+      background: rgba(88,166,255,0.08);
+    }
+
+    .nbr-symbol {
+      font-size: 0.82rem;
+      font-weight: 700;
+      color: #58a6ff;
+      position: relative;
+      z-index: 1;
+    }
+
+    .nbr-count {
+      font-size: 0.7rem;
+      color: #8b949e;
+      background: #0d1117;
+      border-radius: 10px;
+      padding: 1px 6px;
+      font-weight: 600;
+      position: relative;
+      z-index: 1;
+    }
+
+    .nbr-bar {
+      position: absolute;
+      left: 0; bottom: 0;
+      height: 2px;
+      background: linear-gradient(90deg, #1f6feb, #58a6ff);
+      border-radius: 0 0 0 6px;
+      transition: width 0.4s ease;
+    }
+
+    .nbr-note {
+      font-size: 0.72rem;
+      color: #484f58;
+      margin-top: 4px;
+    }
+
     /* Full text */
     .ft-actions { margin-bottom: 10px; }
 
@@ -437,6 +531,8 @@
     <div id="status"></div>
     <div class="error-box" id="error-box"></div>
   </div>
+
+  <div id="neighborhood-panel" style="display:none"></div>
 
   <div id="results">
     <div class="results-header">
