@@ -35,6 +35,7 @@ async function runSearch() {
   setLoading(true);
   setStatus('Building query…');
   document.getElementById('results').style.display = 'none';
+  document.getElementById('neighborhood-panel').style.display = 'none';
 
   try {
     const genePart = genes.length
@@ -84,6 +85,9 @@ async function runSearch() {
     if (email) {
       enrichWithUnpaywall(papers, email);
     }
+
+    // Step 5 (background): Gene neighborhood analysis
+    runNeighborhoodAnalysis(idlist, genes, apiKey);
 
   } catch (err) {
     setLoading(false); setStatus('');
@@ -285,6 +289,195 @@ function updateCardWithUnpaywall(idx, data) {
               font-size:0.74rem;padding:2px 10px;border-radius:20px;text-decoration:none;font-weight:600;">
       &#x1F513; ${label}
     </a>`;
+}
+
+// ─── Gene Neighborhood Analysis ───────────────────────────────────────────────
+// Non-gene uppercase tokens to ignore when scanning abstracts
+const NBR_BLOCKLIST = new Set([
+  'RNA','DNA','PCR','MRNA','CDNA','RRNA','TRNA','NCRNA','LNCRNA','SNRNA',
+  'ATP','ADP','GTP','GDP','AMP','NAD','FAD','CAMP','CGMP','NADH','FADH',
+  'USA','FDA','WHO','NIH','NCI','CDC','EMA','ICH','ASCO','ESMO','NCCN',
+  'MRI','CT','PET','ECG','EEG','EMG','LDH','ALT','AST','PSA','CEA','CA',
+  'SDS','PAGE','FISH','FACS','ELISA','CHIP','WB','RT','IHC','ICC','IF','IP',
+  'IC','IV','VI','VII','VIII','IX','XI','XII','OS','HR','CI','OR','RR',
+  'SD','SE','SEM','KO','WT','OE','KD','CKO','DKO','TKO','SKO',
+  'IL','INF','IFN','TNF','TGF','EGF','IGF','NGF','VEGF','PDGF','FGF',
+  'BDNF','CSF','EPO','TPO','SCF','BMP','WNT','SHH','NF','AP','HIF',
+  'MHC','HLA','TCR','BCR','CAR','NK','DC','LN','PD',
+  'CRC','HCC','GBM','NSCLC','SCLC','AML','CML','ALL','CLL','MM','NHL',
+  'PBS','DMSO','EDTA','BSA','FBS','DMEM','RPMI','LPS','LPA',
+  'PFS','DFS','RFS','TTR','ORR','DCR','CR','PR','SD','PD',
+  'ACE','ARB','SSRI','NSAID','PPI','XRT',
+  'COVID','SARS','HIV','HPV','HCV','HBV','EBV','CMV','HSV',
+  'ER','PR','AR','GR','TR','PXR','CAR','RXR','LXR','FXR',
+  'IC50','EC50','KD','KI','KM','PK','PD','ADME','QC','QA',
+  'CDS','UTR','ORF','SNP','CNV','LOH','MSI','TMB','PDL',
+]);
+
+async function runNeighborhoodAnalysis(pmids, searchedGenes, apiKey) {
+  const panel = document.getElementById('neighborhood-panel');
+  panel.style.display = 'block';
+
+  const papers = window._papers || [];
+
+  // Fetch full text for PMC papers that haven't been loaded yet
+  const pmcPapers = papers.filter(p => p.pmcid && !p.fullTextContent);
+  if (pmcPapers.length) {
+    panel.innerHTML = `<p class="nbr-loading">&#x1F9EC; Fetching full text for ${pmcPapers.length} open-access paper(s)…</p>`;
+    const delay = apiKey ? 110 : 350;   // respect NCBI rate limits
+    for (let i = 0; i < pmcPapers.length; i++) {
+      if (i > 0) await new Promise(r => setTimeout(r, delay));
+      try {
+        pmcPapers[i].fullTextContent = await fetchFullTextContent(pmcPapers[i].pmcid, apiKey);
+      } catch { /* leave undefined; fall back to abstract */ }
+    }
+  }
+
+  panel.innerHTML = '<p class="nbr-loading">&#x1F9EC; Analyzing gene neighborhood…</p>';
+
+  // Pull candidates from full text (PMC) or abstract (fallback)
+  const candidates = extractCandidates(papers, searchedGenes);
+
+  if (!candidates.length) {
+    panel.innerHTML = '<p class="nbr-empty">Not enough co-mentioned genes found in these abstracts.</p>';
+    return;
+  }
+
+  // Validate top 40 candidates against NCBI Gene (human only) — 2 API calls
+  try {
+    const validated = await validateAgainstNCBI(candidates.slice(0, 40), apiKey);
+    renderNeighborhood(validated);
+  } catch (e) {
+    // Fallback: show unvalidated candidates with a note
+    renderNeighborhood(candidates.slice(0, 30).map(c => ({ ...c, name: '' })));
+  }
+}
+
+// Fetch PMC full text and return concatenated plain text (all section bodies)
+async function fetchFullTextContent(pmcid, apiKey) {
+  const url = buildUrl('efetch.fcgi', {
+    db: 'pmc', id: pmcid, rettype: 'full', retmode: 'xml',
+    ...(apiKey && { api_key: apiKey }),
+  });
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const sections = parsePmcXml(await res.text());
+  return sections.map(s => (s.title ? s.title + '\n' : '') + s.text).join('\n\n');
+}
+
+// Scan titles + full text (or abstract) for gene-symbol-like tokens, tally per-paper frequency
+function extractCandidates(papers, searchedGenes) {
+  const searchedUpper = new Set(searchedGenes.map(g => g.toUpperCase()));
+  const freq = {};
+
+  papers.forEach(p => {
+    // Prefer full text when available (PMC open-access), otherwise fall back to abstract
+    const body = p.fullTextContent || p.abstract || '';
+    const text = (p.title || '') + ' ' + body;
+    const seen = new Set();
+    // Gene symbols: 2–8 chars, start with letter, uppercase letters/digits, no leading digits
+    const matches = text.match(/\b[A-Z][A-Z0-9]{1,7}\b/g) || [];
+    matches.forEach(sym => {
+      if (NBR_BLOCKLIST.has(sym)) return;
+      if (searchedUpper.has(sym)) return;
+      // Skip pure roman-numeral-like tokens and very short tokens
+      if (/^(I{1,4}|II|III|IV|VI{0,3}|IX|XI{0,3})$/.test(sym)) return;
+      if (!seen.has(sym)) {
+        seen.add(sym);
+        freq[sym] = (freq[sym] || 0) + 1;
+      }
+    });
+  });
+
+  return Object.entries(freq)
+    .filter(([, count]) => count >= 2)        // must appear in ≥2 papers
+    .sort((a, b) => b[1] - a[1])
+    .map(([symbol, count]) => ({ symbol, count }));
+}
+
+// Batch-validate candidates against NCBI Gene database (human, taxid 9606)
+async function validateAgainstNCBI(candidates, apiKey) {
+  if (!candidates.length) return [];
+  const termParts = candidates.map(c => `"${c.symbol}"[Gene Name]`).join(' OR ');
+  const searchUrl = buildUrl('esearch.fcgi', {
+    db: 'gene',
+    term: `(${termParts}) AND 9606[Taxonomy ID]`,
+    retmax: 50,
+    retmode: 'json',
+    ...(apiKey && { api_key: apiKey }),
+  });
+  const searchRes = await fetchJson(searchUrl);
+  const ids = searchRes.esearchresult?.idlist || [];
+  if (!ids.length) return [];
+
+  const summaryUrl = buildUrl('esummary.fcgi', {
+    db: 'gene', id: ids.join(','), retmode: 'json',
+    ...(apiKey && { api_key: apiKey }),
+  });
+  const summaryRes = await fetchJson(summaryUrl);
+  const result = summaryRes.result || {};
+
+  // Map official symbol → {name, chromosome}
+  const officialMap = {};
+  ids.forEach(id => {
+    const g = result[id];
+    if (!g || !g.name) return;
+    if (String(g.organism?.taxid) !== '9606') return;
+    officialMap[g.name.toUpperCase()] = {
+      symbol: g.name,
+      name: g.description || '',
+      chromosome: g.chromosome || '',
+    };
+  });
+
+  // Merge frequencies back in, preserving original sort order
+  return candidates
+    .map(c => {
+      const info = officialMap[c.symbol.toUpperCase()];
+      return info ? { ...c, ...info } : null;
+    })
+    .filter(Boolean)
+    .slice(0, 35);
+}
+
+function renderNeighborhood(neighbors, searchedGenes) {
+  const panel = document.getElementById('neighborhood-panel');
+  if (!neighbors.length) {
+    panel.innerHTML = '<p class="nbr-empty">No neighboring genes found in these papers.</p>';
+    return;
+  }
+
+  const maxCount = neighbors[0].count;
+  const chips = neighbors.map(g => {
+    const bar = Math.round((g.count / maxCount) * 100);
+    return `
+      <button class="nbr-chip" title="${escHtml(g.name)}${g.chromosome ? ' · chr' + escHtml(g.chromosome) : ''}"
+              onclick="addNeighborGene('${escHtml(g.symbol)}')">
+        <span class="nbr-symbol">${escHtml(g.symbol)}</span>
+        <span class="nbr-count">${g.count}</span>
+        <span class="nbr-bar" style="width:${bar}%"></span>
+      </button>`;
+  }).join('');
+
+  panel.innerHTML = `
+    <div class="nbr-header">
+      <span class="nbr-title">&#x1F9EC; Gene Neighborhood</span>
+      <span class="nbr-subtitle">Genes co-mentioned in these papers &mdash; click to add to search</span>
+    </div>
+    <div class="nbr-chips">${chips}</div>
+    <p class="nbr-note">Sorted by co-mention frequency &middot; human genes only &middot; excludes queried genes</p>
+  `;
+}
+
+function addNeighborGene(symbol) {
+  const el = document.getElementById('genes');
+  const existing = parseGenes(el.value).map(g => g.toUpperCase());
+  if (existing.includes(symbol.toUpperCase())) return;
+  el.value = el.value.trim() ? el.value.trim() + ', ' + symbol : symbol;
+  renderGeneChips();
+  // briefly flash the gene input
+  el.style.borderColor = '#3fb950';
+  setTimeout(() => { el.style.borderColor = ''; }, 900);
 }
 
 // ─── Render results ───────────────────────────────────────────────────────────
