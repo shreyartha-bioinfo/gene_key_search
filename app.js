@@ -77,7 +77,10 @@ async function runSearch() {
     setLoading(false);
     renderResults(papers, parseInt(count));
 
-    // Step 4 (background): Unpaywall for papers with DOIs
+    // Step 4 (background): gene descriptions for queried genes
+    if (genes.length) showGeneDescriptions(genes, papers, apiKey);
+
+    // Step 5 (background): Unpaywall for papers with DOIs
     if (email) {
       enrichWithUnpaywall(papers, email);
     }
@@ -398,3 +401,72 @@ function escHtml(str) {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') runSearch();
   })
 );
+
+// ─── Gene descriptions ────────────────────────────────────────────────────────
+async function showGeneDescriptions(genes, papers, apiKey) {
+  const panel = document.getElementById('gene-desc-panel');
+  panel.style.display = 'block';
+  panel.innerHTML = '<p style="padding:6px 0;font-size:0.8rem;color:#8b949e">&#x1F9EC; Loading gene summaries…</p>';
+
+  // Fetch NCBI Gene descriptions for all queried genes (2 API calls)
+  const infoMap = await fetchGeneInfo(genes, apiKey).catch(() => ({}));
+
+  const cards = genes.map(sym => {
+    const info = infoMap[sym.toUpperCase()] || {};
+    const ctx  = pickContextSentence(sym, papers);
+    return `
+      <div class="gdesc-card">
+        <div class="gdesc-top">
+          <span class="gdesc-sym">${escHtml(sym)}</span>
+          ${info.chromosome ? `<span class="gdesc-chr">chr${escHtml(info.chromosome)}</span>` : ''}
+        </div>
+        ${info.name ? `<div class="gdesc-name">${escHtml(info.name)}</div>` : ''}
+        ${ctx       ? `<div class="gdesc-ctx">${escHtml(ctx)}</div>`        : ''}
+      </div>`;
+  }).join('');
+
+  panel.innerHTML = `
+    <div class="gdesc-header">
+      <span class="gdesc-title">&#x1F50D; Genes of Interest</span>
+      <span class="gdesc-sub">NCBI description &amp; context from retrieved papers</span>
+    </div>
+    <div class="gdesc-cards">${cards}</div>`;
+}
+
+async function fetchGeneInfo(symbols, apiKey) {
+  const term = symbols.map(s => `"${s}"[Gene Name]`).join(' OR ');
+  const sRes = await fetchJson(buildUrl('esearch.fcgi', {
+    db: 'gene', term: `(${term}) AND 9606[Taxonomy ID]`,
+    retmax: symbols.length + 5, retmode: 'json',
+    ...(apiKey && { api_key: apiKey }),
+  }));
+  const ids = sRes.esearchresult?.idlist || [];
+  if (!ids.length) return {};
+
+  const dRes = await fetchJson(buildUrl('esummary.fcgi', {
+    db: 'gene', id: ids.join(','), retmode: 'json',
+    ...(apiKey && { api_key: apiKey }),
+  }));
+  const map = {};
+  (dRes.result?.uids || ids).forEach(id => {
+    const g = dRes.result?.[id];
+    if (!g?.name || String(g.organism?.taxid) !== '9606') return;
+    map[g.name.toUpperCase()] = { name: g.description || '', chromosome: g.chromosome || '' };
+  });
+  return map;
+}
+
+// Pick the first clean sentence from any paper's abstract that mentions `sym`
+function pickContextSentence(sym, papers) {
+  const re = new RegExp(`\\b${sym}\\b`);
+  for (const p of papers) {
+    const text = p.abstract || '';
+    const sentences = text.replace(/([.!?])\s+/g, '$1\n').split('\n');
+    for (const raw of sentences) {
+      const s = raw.trim();
+      if (!re.test(s) || s.length < 40 || s.length > 350 || !/^[A-Za-z]/.test(s)) continue;
+      return s.length > 150 ? s.slice(0, 147) + '…' : s;
+    }
+  }
+  return '';
+}
