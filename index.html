@@ -318,6 +318,55 @@
       border-radius: 20px;
       font-weight: 600;
     }
+
+    .tag-pmc {
+      background: rgba(63,185,80,0.12);
+      border-color: rgba(63,185,80,0.4);
+      color: #3fb950;
+    }
+
+    /* Full text */
+    .ft-actions { margin-bottom: 10px; }
+
+    .btn-ft {
+      background: rgba(163,113,247,0.1);
+      border: 1px solid rgba(163,113,247,0.35);
+      color: #a371f7;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      padding: 5px 14px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn-ft:hover { background: rgba(163,113,247,0.2); }
+    .btn-ft:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .ft-box {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 18px 20px;
+      margin-bottom: 12px;
+      max-height: 480px;
+      overflow-y: auto;
+    }
+
+    .ft-section-title {
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: #a371f7;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin: 16px 0 6px;
+    }
+    .ft-section-title:first-child { margin-top: 0; }
+
+    .ft-section-body {
+      font-size: 0.85rem;
+      color: #c9d1d9;
+      line-height: 1.7;
+      white-space: pre-wrap;
+    }
   </style>
 </head>
 <body>
@@ -369,7 +418,11 @@
       </div>
       <div class="option-group">
         <label for="api-key">NCBI API Key <span style="font-size:0.7rem;color:#484f58">(optional)</span></label>
-        <input type="text" id="api-key" placeholder="Paste key for higher rate limits" style="width:220px" />
+        <input type="text" id="api-key" placeholder="For higher rate limits" style="width:180px" />
+      </div>
+      <div class="option-group">
+        <label for="unpaywall-email">Your Email <span style="font-size:0.7rem;color:#484f58">(for free PDF links)</span></label>
+        <input type="text" id="unpaywall-email" placeholder="you@example.com (Unpaywall)" style="width:220px" />
       </div>
     </div>
 
