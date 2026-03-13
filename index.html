@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gene Key Search</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+    }
+
+    header {
+      background: linear-gradient(135deg, #1a1f2e 0%, #0d1117 100%);
+      border-bottom: 1px solid #30363d;
+      padding: 20px 40px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    header svg { width: 36px; height: 36px; flex-shrink: 0; }
+
+    header h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      background: linear-gradient(90deg, #58a6ff, #a371f7);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    header p {
+      font-size: 0.8rem;
+      color: #8b949e;
+      margin-top: 2px;
+    }
+
+    main {
+      max-width: 960px;
+      margin: 40px auto;
+      padding: 0 20px;
+    }
+
+    .search-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 12px;
+      padding: 32px;
+      margin-bottom: 32px;
+    }
+
+    .field-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+
+    @media (max-width: 640px) { .field-grid { grid-template-columns: 1fr; } }
+
+    label {
+      display: block;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #8b949e;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 8px;
+    }
+
+    label span { color: #58a6ff; }
+
+    textarea {
+      width: 100%;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      color: #e2e8f0;
+      font-size: 0.95rem;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      padding: 12px 14px;
+      resize: vertical;
+      transition: border-color 0.2s;
+      min-height: 90px;
+    }
+
+    textarea::placeholder { color: #484f58; }
+    textarea:focus { outline: none; border-color: #58a6ff; box-shadow: 0 0 0 3px rgba(88,166,255,0.1); }
+
+    .options-row {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+
+    .option-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    select, input[type="number"], input[type="text"] {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      color: #e2e8f0;
+      font-size: 0.88rem;
+      padding: 8px 12px;
+      transition: border-color 0.2s;
+    }
+
+    select:focus, input[type="number"]:focus, input[type="text"]:focus {
+      outline: none;
+      border-color: #58a6ff;
+    }
+
+    .btn-search {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: linear-gradient(135deg, #238636, #2ea043);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      padding: 12px 28px;
+      cursor: pointer;
+      transition: opacity 0.2s, transform 0.1s;
+    }
+
+    .btn-search:hover { opacity: 0.88; }
+    .btn-search:active { transform: scale(0.97); }
+    .btn-search:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* spinner */
+    .spinner {
+      display: none;
+      width: 18px; height: 18px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* status */
+    #status {
+      margin-top: 16px;
+      font-size: 0.85rem;
+      color: #8b949e;
+      min-height: 20px;
+    }
+
+    /* results */
+    #results { display: none; }
+
+    .results-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .results-header h2 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: #e2e8f0;
+    }
+
+    .results-header .badge {
+      background: #1f6feb;
+      color: #fff;
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 20px;
+    }
+
+    .btn-export {
+      background: #21262d;
+      border: 1px solid #30363d;
+      color: #c9d1d9;
+      border-radius: 6px;
+      font-size: 0.82rem;
+      padding: 6px 14px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn-export:hover { background: #30363d; }
+
+    .paper-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 10px;
+      padding: 22px 26px;
+      margin-bottom: 16px;
+      transition: border-color 0.2s;
+    }
+
+    .paper-card:hover { border-color: #58a6ff; }
+
+    .paper-title {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #58a6ff;
+      margin-bottom: 6px;
+      line-height: 1.4;
+    }
+
+    .paper-title a { color: inherit; text-decoration: none; }
+    .paper-title a:hover { text-decoration: underline; }
+
+    .paper-meta {
+      font-size: 0.8rem;
+      color: #8b949e;
+      margin-bottom: 10px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .paper-meta .tag {
+      background: #1c2128;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      padding: 2px 8px;
+      font-size: 0.74rem;
+    }
+
+    .paper-abstract {
+      font-size: 0.88rem;
+      color: #c9d1d9;
+      line-height: 1.6;
+      margin-bottom: 12px;
+    }
+
+    .paper-abstract.collapsed {
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .toggle-abstract {
+      background: none;
+      border: none;
+      color: #58a6ff;
+      font-size: 0.8rem;
+      cursor: pointer;
+      padding: 0;
+      margin-bottom: 12px;
+    }
+
+    .citation-box {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 10px 14px;
+      font-size: 0.78rem;
+      color: #8b949e;
+      font-family: monospace;
+      word-break: break-word;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+
+    .citation-text { flex: 1; }
+
+    .btn-copy {
+      background: none;
+      border: none;
+      color: #58a6ff;
+      cursor: pointer;
+      font-size: 0.75rem;
+      white-space: nowrap;
+      flex-shrink: 0;
+      padding: 2px 6px;
+      border-radius: 4px;
+      transition: background 0.2s;
+    }
+    .btn-copy:hover { background: rgba(88,166,255,0.1); }
+
+    .error-box {
+      background: #2d1b1b;
+      border: 1px solid #f85149;
+      color: #f85149;
+      border-radius: 8px;
+      padding: 14px 18px;
+      font-size: 0.9rem;
+      margin-top: 16px;
+      display: none;
+    }
+
+    .gene-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .chip {
+      background: rgba(88,166,255,0.12);
+      border: 1px solid rgba(88,166,255,0.3);
+      color: #58a6ff;
+      font-size: 0.75rem;
+      padding: 2px 10px;
+      border-radius: 20px;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2z" fill="#1f6feb"/>
+    <path d="M8 9h8M8 12h8M8 15h5" stroke="#58a6ff" stroke-width="1.5" stroke-linecap="round"/>
+    <circle cx="17" cy="15" r="2.5" fill="#a371f7"/>
+    <path d="M19 16.5l2 2" stroke="#a371f7" stroke-width="1.5" stroke-linecap="round"/>
+  </svg>
+  <div>
+    <h1>Gene Key Search</h1>
+    <p>Search NCBI PubMed for gene-related literature &mdash; hg38</p>
+  </div>
+</header>
+
+<main>
+  <div class="search-card">
+    <div class="field-grid">
+      <div>
+        <label for="genes">Gene Names <span>(hg38, comma-separated)</span></label>
+        <textarea id="genes" placeholder="e.g. BRCA1, TP53, EGFR, MYC"></textarea>
+        <div class="gene-chips" id="gene-chips"></div>
+      </div>
+      <div>
+        <label for="keywords">Keywords <span>(context / topic)</span></label>
+        <textarea id="keywords" placeholder="e.g. cancer, tumor suppressor, drug resistance, CRISPR"></textarea>
+      </div>
+    </div>
+
+    <div class="options-row">
+      <div class="option-group">
+        <label for="max-results">Max results</label>
+        <input type="number" id="max-results" min="5" max="100" value="20" style="width:80px" />
+      </div>
+      <div class="option-group">
+        <label for="sort-by">Sort by</label>
+        <select id="sort-by">
+          <option value="relevance">Relevance</option>
+          <option value="pub_date">Publication date</option>
+          <option value="Author">Author</option>
+          <option value="JournalName">Journal</option>
+        </select>
+      </div>
+      <div class="option-group">
+        <label for="date-filter">Published after</label>
+        <input type="number" id="date-filter" min="1990" max="2026" placeholder="e.g. 2018" style="width:100px" />
+      </div>
+      <div class="option-group">
+        <label for="api-key">NCBI API Key <span style="font-size:0.7rem;color:#484f58">(optional)</span></label>
+        <input type="text" id="api-key" placeholder="Paste key for higher rate limits" style="width:220px" />
+      </div>
+    </div>
+
+    <button class="btn-search" id="search-btn" onclick="runSearch()">
+      <svg id="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      <div class="spinner" id="spinner"></div>
+      Search PubMed
+    </button>
+
+    <div id="status"></div>
+    <div class="error-box" id="error-box"></div>
+  </div>
+
+  <div id="results">
+    <div class="results-header">
+      <div style="display:flex;align-items:center;gap:10px">
+        <h2>Results</h2>
+        <span class="badge" id="result-count">0 papers</span>
+      </div>
+      <button class="btn-export" onclick="exportResults()">Export citations (.txt)</button>
+    </div>
+    <div id="papers"></div>
+  </div>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
