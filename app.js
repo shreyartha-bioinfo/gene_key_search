@@ -1,44 +1,35 @@
 /**
- * Gene Key Search — NCBI PubMed integration
- * Uses NCBI E-utilities (esearch + esummary + efetch) — no server required.
+ * Gene Key Search — NCBI PubMed + PMC full-text + Unpaywall integration
  */
 
-const EUTILS_BASE = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/';
+const EUTILS_BASE    = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/';
+const UNPAYWALL_BASE = 'https://api.unpaywall.org/v2/';
 
-// ─── Chip preview for gene input ─────────────────────────────────────────────
+// ─── Gene chip preview ────────────────────────────────────────────────────────
 document.getElementById('genes').addEventListener('input', renderGeneChips);
 
 function renderGeneChips() {
-  const raw = document.getElementById('genes').value;
-  const genes = parseGenes(raw);
-  const container = document.getElementById('gene-chips');
-  container.innerHTML = genes
-    .map(g => `<span class="chip">${escHtml(g)}</span>`)
-    .join('');
+  const genes = parseGenes(document.getElementById('genes').value);
+  document.getElementById('gene-chips').innerHTML = genes
+    .map(g => `<span class="chip">${escHtml(g)}</span>`).join('');
 }
 
 function parseGenes(raw) {
-  return raw
-    .split(/[,\n]+/)
-    .map(s => s.trim().toUpperCase())
-    .filter(Boolean);
+  return raw.split(/[,\n]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
 }
 
-// ─── Main search entry point ──────────────────────────────────────────────────
+// ─── Main search ──────────────────────────────────────────────────────────────
 async function runSearch() {
-  const genesRaw  = document.getElementById('genes').value.trim();
-  const keywords  = document.getElementById('keywords').value.trim();
-
-  if (!genesRaw && !keywords) {
-    showError('Please enter at least one gene name or keyword.');
-    return;
-  }
+  const genesRaw = document.getElementById('genes').value.trim();
+  const keywords = document.getElementById('keywords').value.trim();
+  if (!genesRaw && !keywords) { showError('Please enter at least one gene name or keyword.'); return; }
 
   const genes      = parseGenes(genesRaw);
   const maxResults = Math.min(Math.max(parseInt(document.getElementById('max-results').value) || 20, 1), 200);
   const sortBy     = document.getElementById('sort-by').value;
   const afterYear  = parseInt(document.getElementById('date-filter').value) || null;
   const apiKey     = document.getElementById('api-key').value.trim();
+  const email      = document.getElementById('unpaywall-email').value.trim();
 
   clearError();
   setLoading(true);
@@ -46,70 +37,54 @@ async function runSearch() {
   document.getElementById('results').style.display = 'none';
 
   try {
-    // Build query: each gene as [Gene Name] field tag + free-text keywords
     const genePart = genes.length
       ? genes.map(g => `"${g}"[Gene Name] OR "${g}"[Title/Abstract]`).join(' OR ')
       : '';
     const kwPart = keywords
       ? keywords.split(/[,\n]+/).map(k => `"${k.trim()}"[Title/Abstract]`).join(' AND ')
       : '';
-
     let query = [genePart, kwPart].filter(Boolean).join(' AND ');
     if (afterYear) query += ` AND ("${afterYear}/01/01"[Date - Publication] : "3000"[Date - Publication])`;
 
-    setStatus(`Searching PubMed for: ${query.substring(0, 120)}…`);
+    setStatus(`Searching PubMed…`);
 
-    // Step 1: esearch → get PMIDs
-    const searchUrl = buildUrl('esearch.fcgi', {
-      db: 'pubmed',
-      term: query,
-      retmax: maxResults,
-      sort: sortBy,
-      retmode: 'json',
-      usehistory: 'y',
-      ...(apiKey && { api_key: apiKey }),
-    });
-
-    const searchRes = await fetchJson(searchUrl);
-    const { idlist, count, webenv, query_key } = searchRes.esearchresult;
-
+    // Step 1: esearch → PMIDs
+    const searchRes = await fetchJson(buildUrl('esearch.fcgi', {
+      db: 'pubmed', term: query, retmax: maxResults, sort: sortBy,
+      retmode: 'json', usehistory: 'y', ...(apiKey && { api_key: apiKey }),
+    }));
+    const { idlist, count } = searchRes.esearchresult;
     if (!idlist || idlist.length === 0) {
-      setStatus('');
-      showError(`No results found for your query. Try broader gene names or keywords.`);
-      setLoading(false);
-      return;
+      setStatus(''); showError('No results found. Try broader gene names or keywords.');
+      setLoading(false); return;
     }
 
-    setStatus(`Found ${count} total results. Fetching details for top ${idlist.length}…`);
+    setStatus(`Found ${count} results. Fetching metadata…`);
 
-    // Step 2: esummary → article metadata
-    const summaryUrl = buildUrl('esummary.fcgi', {
-      db: 'pubmed',
-      id: idlist.join(','),
-      retmode: 'json',
+    // Step 2: esummary → metadata (includes PMC IDs in articleids)
+    const summaryRes = await fetchJson(buildUrl('esummary.fcgi', {
+      db: 'pubmed', id: idlist.join(','), retmode: 'json',
       ...(apiKey && { api_key: apiKey }),
-    });
-
-    const summaryRes = await fetchJson(summaryUrl);
+    }));
     const papers = parseSummaries(summaryRes.result, idlist);
 
-    // Step 3: efetch abstracts in one request (text mode)
+    // Step 3: abstracts
     setStatus('Fetching abstracts…');
     const abstracts = await fetchAbstracts(idlist, apiKey);
-
-    // Merge abstracts
-    papers.forEach(p => {
-      p.abstract = abstracts[p.pmid] || '';
-    });
+    papers.forEach(p => { p.abstract = abstracts[p.pmid] || ''; });
 
     setStatus('');
     setLoading(false);
-    renderResults(papers, parseInt(count), genes, keywords);
+    renderResults(papers, parseInt(count));
+
+    // Step 4 (background): Unpaywall for papers with DOIs
+    if (email) {
+      enrichWithUnpaywall(papers, email);
+    }
 
   } catch (err) {
-    setLoading(false);
-    setStatus('');
-    showError(`Error: ${err.message}. Check your network connection or NCBI API key.`);
+    setLoading(false); setStatus('');
+    showError(`Error: ${err.message}. Check your network connection or API key.`);
     console.error(err);
   }
 }
@@ -128,32 +103,22 @@ async function fetchJson(url) {
 }
 
 async function fetchAbstracts(pmids, apiKey) {
-  const params = {
-    db: 'pubmed',
-    id: pmids.join(','),
-    rettype: 'abstract',
-    retmode: 'text',
+  const url = buildUrl('efetch.fcgi', {
+    db: 'pubmed', id: pmids.join(','), rettype: 'abstract', retmode: 'text',
     ...(apiKey && { api_key: apiKey }),
-  };
-  const url = buildUrl('efetch.fcgi', params);
+  });
   const res = await fetch(url);
   if (!res.ok) return {};
-  const text = await res.text();
-  return parseAbstractText(text, pmids);
+  return parseAbstractText(await res.text());
 }
 
-// Parse the plain-text efetch response; sections are separated by blank lines + PMID header
-function parseAbstractText(text, pmids) {
+function parseAbstractText(text) {
   const map = {};
-  // Each record starts with "1. Title\n\nAuthor...\nPMID: XXXXX"
-  const records = text.split(/\n\n\n+/);
-  records.forEach(block => {
+  text.split(/\n\n\n+/).forEach(block => {
     const pmidMatch = block.match(/PMID:\s*(\d+)/);
     if (!pmidMatch) return;
-    const pmid = pmidMatch[1];
-    // Abstract is the paragraph that follows "Abstract" header
     const absMatch = block.match(/Abstract\s*\n([\s\S]+?)(?:\n(?:Author information|PMID|Copyright|DOI|Comment|Conflict|ClinicalTrials|Erratum|Supplementary|©|\d{4} ))/i);
-    map[pmid] = absMatch ? absMatch[1].replace(/\s+/g, ' ').trim() : '';
+    map[pmidMatch[1]] = absMatch ? absMatch[1].replace(/\s+/g, ' ').trim() : '';
   });
   return map;
 }
@@ -163,20 +128,20 @@ function parseSummaries(result, idlist) {
     const art = result[pmid];
     if (!art) return null;
 
-    const authors = (art.authors || []).map(a => a.name);
-    const authorStr = authors.length > 3
-      ? `${authors.slice(0, 3).join(', ')}, et al.`
-      : authors.join(', ');
+    const authors   = (art.authors || []).map(a => a.name);
+    const authorStr = authors.length > 3 ? `${authors.slice(0, 3).join(', ')}, et al.` : authors.join(', ');
+    const pubDate   = art.pubdate || art.epubdate || '';
+    const year      = pubDate.match(/\d{4}/)?.[0] || '';
+    const journal   = art.fulljournalname || art.source || '';
+    const volume    = art.volume || '';
+    const issue     = art.issue  ? `(${art.issue})` : '';
+    const pages     = art.pages  ? `:${art.pages}` : '';
+    const ids       = art.articleids || [];
+    const doi       = ids.find(i => i.idtype === 'doi')?.value  || '';
+    // PMC ID comes as "PMC1234567" or just digits — normalise to numeric
+    const pmcRaw    = ids.find(i => i.idtype === 'pmc')?.value  || '';
+    const pmcid     = pmcRaw.replace(/^PMC/i, '').trim();
 
-    const pubDate = art.pubdate || art.epubdate || '';
-    const year    = pubDate.match(/\d{4}/)?.[0] || '';
-    const journal = art.fulljournalname || art.source || '';
-    const volume  = art.volume ? `${art.volume}` : '';
-    const issue   = art.issue  ? `(${art.issue})` : '';
-    const pages   = art.pages  ? `:${art.pages}` : '';
-    const doi     = (art.articleids || []).find(i => i.idtype === 'doi')?.value || '';
-
-    // APA-style citation
     const citation = [
       authorStr,
       year ? ` (${year}).` : '.',
@@ -185,14 +150,142 @@ function parseSummaries(result, idlist) {
       volume  ? `, ${volume}${issue}${pages}` : '',
       doi     ? `. https://doi.org/${doi}` : '',
       `. PMID: ${pmid}`,
+      pmcid   ? `. PMCID: PMC${pmcid}` : '',
     ].join('');
 
-    return { pmid, title: art.title, authors: authorStr, year, journal, volume, issue, pages, doi, pubDate, citation };
+    return { pmid, title: art.title, authors: authorStr, year, journal, volume, issue, pages, doi, pmcid, pubDate, citation };
   }).filter(Boolean);
 }
 
+// ─── PMC Full Text ────────────────────────────────────────────────────────────
+async function loadFullText(pmcid, idx) {
+  const btn = document.getElementById(`ft-btn-${idx}`);
+  const box = document.getElementById(`ft-box-${idx}`);
+  const apiKey = document.getElementById('api-key').value.trim();
+
+  btn.disabled = true;
+  btn.textContent = 'Loading full text…';
+
+  try {
+    const url = buildUrl('efetch.fcgi', {
+      db: 'pmc', id: pmcid, rettype: 'full', retmode: 'xml',
+      ...(apiKey && { api_key: apiKey }),
+    });
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const xmlText = await res.text();
+    const sections = parsePmcXml(xmlText);
+
+    if (!sections.length) {
+      box.innerHTML = '<p style="color:#8b949e;font-size:0.85rem">Full text not available in this format.</p>';
+    } else {
+      box.innerHTML = sections.map(s => `
+        ${s.title ? `<h4 class="ft-section-title">${escHtml(s.title)}</h4>` : ''}
+        <p class="ft-section-body">${escHtml(s.text)}</p>
+      `).join('');
+    }
+
+    box.style.display = 'block';
+    btn.textContent = 'Hide full text ▴';
+    btn.disabled = false;
+    btn.onclick = () => toggleFullText(idx);
+
+  } catch (err) {
+    box.innerHTML = `<p style="color:#f85149;font-size:0.85rem">Could not load full text: ${escHtml(err.message)}</p>`;
+    box.style.display = 'block';
+    btn.textContent = 'Full text (PMC)';
+    btn.disabled = false;
+  }
+}
+
+function toggleFullText(idx) {
+  const btn = document.getElementById(`ft-btn-${idx}`);
+  const box = document.getElementById(`ft-box-${idx}`);
+  if (box.style.display === 'none') {
+    box.style.display = 'block';
+    btn.textContent = 'Hide full text ▴';
+  } else {
+    box.style.display = 'none';
+    btn.textContent = 'Show full text ▾';
+  }
+}
+
+function parsePmcXml(xmlText) {
+  const parser = new DOMParser();
+  const doc    = parser.parseFromString(xmlText, 'application/xml');
+  const body   = doc.querySelector('body');
+  if (!body) return [];
+
+  const sections = [];
+  body.querySelectorAll('sec').forEach(sec => {
+    // Only top-level sections (direct children of body or first-level)
+    if (sec.parentElement && sec.parentElement.tagName.toLowerCase() !== 'body') return;
+    const titleEl = sec.querySelector(':scope > title');
+    const title   = titleEl ? titleEl.textContent.trim() : '';
+    const paras   = [...sec.querySelectorAll(':scope > p')].map(p => p.textContent.trim()).filter(Boolean);
+    if (paras.length) sections.push({ title, text: paras.join('\n\n') });
+  });
+
+  // Fallback: if no sec structure, grab all top-level paragraphs
+  if (!sections.length) {
+    const paras = [...body.querySelectorAll('p')].map(p => p.textContent.trim()).filter(Boolean);
+    if (paras.length) sections.push({ title: '', text: paras.join('\n\n') });
+  }
+
+  return sections;
+}
+
+// ─── Unpaywall (background enrichment) ───────────────────────────────────────
+async function enrichWithUnpaywall(papers, email) {
+  const withDoi = papers.filter(p => p.doi);
+  if (!withDoi.length) return;
+
+  // Stagger requests to be polite (~5/sec)
+  const results = await Promise.allSettled(
+    withDoi.map((p, i) => new Promise(resolve =>
+      setTimeout(() => fetchUnpaywall(p.doi, email).then(resolve).catch(() => resolve(null)), i * 200)
+    ))
+  );
+
+  results.forEach((r, i) => {
+    if (r.status !== 'fulfilled' || !r.value) return;
+    const paper = withDoi[i];
+    const data  = r.value;
+    const idx   = papers.indexOf(paper);
+    updateCardWithUnpaywall(idx, data);
+    paper.oaData = data;
+  });
+}
+
+async function fetchUnpaywall(doi, email) {
+  const url = `${UNPAYWALL_BASE}${encodeURIComponent(doi)}?email=${encodeURIComponent(email)}`;
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  return res.json();
+}
+
+function updateCardWithUnpaywall(idx, data) {
+  const oaLoc = data.best_oa_location;
+  if (!oaLoc) return;
+
+  const pdfUrl = oaLoc.url_for_pdf || oaLoc.url;
+  if (!pdfUrl) return;
+
+  const anchor = document.getElementById(`oa-slot-${idx}`);
+  if (!anchor) return;
+
+  const label = oaLoc.url_for_pdf ? 'Free PDF' : 'Free Full Text';
+  const color = data.oa_status === 'gold' ? '#f0883e' : data.oa_status === 'green' ? '#3fb950' : '#58a6ff';
+  anchor.innerHTML = `
+    <a href="${escHtml(pdfUrl)}" target="_blank" rel="noopener"
+       style="background:rgba(63,185,80,0.12);border:1px solid ${color};color:${color};
+              font-size:0.74rem;padding:2px 10px;border-radius:20px;text-decoration:none;font-weight:600;">
+      &#x1F513; ${label}
+    </a>`;
+}
+
 // ─── Render results ───────────────────────────────────────────────────────────
-function renderResults(papers, totalCount, genes, keywords) {
+function renderResults(papers, totalCount) {
   document.getElementById('result-count').textContent = `${papers.length} of ${totalCount} papers`;
   document.getElementById('results').style.display = 'block';
 
@@ -200,8 +293,9 @@ function renderResults(papers, totalCount, genes, keywords) {
   container.innerHTML = '';
 
   papers.forEach((p, idx) => {
-    const hasAbstract = p.abstract && p.abstract.length > 0;
     const pubmedUrl = `https://pubmed.ncbi.nlm.nih.gov/${p.pmid}/`;
+    const hasPmc    = !!p.pmcid;
+    const hasAbstract = p.abstract && p.abstract.length > 0;
 
     const card = document.createElement('div');
     card.className = 'paper-card';
@@ -211,15 +305,28 @@ function renderResults(papers, totalCount, genes, keywords) {
       </div>
       <div class="paper-meta">
         <span>${escHtml(p.authors)}</span>
-        ${p.year ? `<span class="tag">${p.year}</span>` : ''}
+        ${p.year    ? `<span class="tag">${p.year}</span>` : ''}
         ${p.journal ? `<span class="tag">${escHtml(p.journal)}</span>` : ''}
-        ${p.doi ? `<a href="https://doi.org/${p.doi}" target="_blank" rel="noopener" style="color:#58a6ff;font-size:0.78rem">DOI</a>` : ''}
+        ${hasPmc    ? `<span class="tag tag-pmc">PMC Open Access</span>` : ''}
+        ${p.doi     ? `<a href="https://doi.org/${p.doi}" target="_blank" rel="noopener" style="color:#58a6ff;font-size:0.78rem">DOI</a>` : ''}
         <a href="${pubmedUrl}" target="_blank" rel="noopener" style="color:#8b949e;font-size:0.78rem">PMID ${p.pmid}</a>
+        <span id="oa-slot-${idx}"></span>
       </div>
+
       ${hasAbstract ? `
         <div class="paper-abstract collapsed" id="abs-${idx}">${escHtml(p.abstract)}</div>
         <button class="toggle-abstract" onclick="toggleAbstract(${idx})">Show abstract ▾</button>
       ` : `<p style="font-size:0.82rem;color:#484f58;margin-bottom:10px">No abstract available</p>`}
+
+      ${hasPmc ? `
+        <div class="ft-actions">
+          <button class="btn-ft" id="ft-btn-${idx}" onclick="loadFullText('${p.pmcid}', ${idx})">
+            &#x1F4C4; Load full text (PMC)
+          </button>
+        </div>
+        <div class="ft-box" id="ft-box-${idx}" style="display:none"></div>
+      ` : ''}
+
       <div class="citation-box">
         <span class="citation-text" id="cit-${idx}">${escHtml(p.citation)}</span>
         <button class="btn-copy" onclick="copyCitation(${idx})">Copy</button>
@@ -228,20 +335,15 @@ function renderResults(papers, totalCount, genes, keywords) {
     container.appendChild(card);
   });
 
-  // store for export
   window._papers = papers;
 }
 
+// ─── UI helpers ───────────────────────────────────────────────────────────────
 function toggleAbstract(idx) {
   const el  = document.getElementById(`abs-${idx}`);
   const btn = el.nextElementSibling;
-  if (el.classList.contains('collapsed')) {
-    el.classList.remove('collapsed');
-    btn.textContent = 'Hide abstract ▴';
-  } else {
-    el.classList.add('collapsed');
-    btn.textContent = 'Show abstract ▾';
-  }
+  const collapsed = el.classList.toggle('collapsed');
+  btn.textContent = collapsed ? 'Show abstract ▾' : 'Hide abstract ▴';
 }
 
 function copyCitation(idx) {
@@ -256,52 +358,43 @@ function copyCitation(idx) {
 function exportResults() {
   const papers = window._papers || [];
   if (!papers.length) return;
-  const text = papers.map((p, i) => `[${i + 1}] ${p.citation}`).join('\n\n');
-  const blob = new Blob([text], { type: 'text/plain' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
+  const lines = papers.map((p, i) => {
+    let line = `[${i + 1}] ${p.citation}`;
+    if (p.oaData?.best_oa_location?.url_for_pdf) line += `\n    Free PDF: ${p.oaData.best_oa_location.url_for_pdf}`;
+    return line;
+  });
+  const blob = new Blob([lines.join('\n\n')], { type: 'text/plain' });
+  const a    = document.createElement('a');
+  a.href     = URL.createObjectURL(blob);
   a.download = 'gene_search_citations.txt';
   a.click();
 }
 
-// ─── UI utilities ─────────────────────────────────────────────────────────────
 function setLoading(on) {
-  const btn     = document.getElementById('search-btn');
-  const spinner = document.getElementById('spinner');
-  const icon    = document.getElementById('search-icon');
-  btn.disabled       = on;
-  spinner.style.display = on ? 'block' : 'none';
-  icon.style.display    = on ? 'none'  : 'block';
+  document.getElementById('search-btn').disabled = on;
+  document.getElementById('spinner').style.display    = on ? 'block' : 'none';
+  document.getElementById('search-icon').style.display = on ? 'none' : 'block';
 }
 
-function setStatus(msg) {
-  document.getElementById('status').textContent = msg;
-}
+function setStatus(msg) { document.getElementById('status').textContent = msg; }
 
 function showError(msg) {
   const box = document.getElementById('error-box');
-  box.textContent = msg;
-  box.style.display = 'block';
+  box.textContent = msg; box.style.display = 'block';
 }
 
 function clearError() {
   const box = document.getElementById('error-box');
-  box.textContent = '';
-  box.style.display = 'none';
+  box.textContent = ''; box.style.display = 'none';
 }
 
 function escHtml(str) {
   if (!str) return '';
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// Allow Enter key in textareas to trigger search (Ctrl/Cmd+Enter)
-['genes', 'keywords'].forEach(id => {
+['genes', 'keywords'].forEach(id =>
   document.getElementById(id).addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') runSearch();
-  });
-});
+  })
+);
