@@ -35,6 +35,7 @@ async function runSearch() {
   setLoading(true);
   setStatus('Building query…');
   document.getElementById('results').style.display = 'none';
+  document.getElementById('neighborhood-panel').style.display = 'none';
 
   try {
     const genePart = genes.length
@@ -81,6 +82,9 @@ async function runSearch() {
     if (email) {
       enrichWithUnpaywall(papers, email);
     }
+
+    // Step 5 (background): Gene neighborhood analysis
+    runNeighborhoodAnalysis(idlist, genes, apiKey);
 
   } catch (err) {
     setLoading(false); setStatus('');
@@ -282,6 +286,128 @@ function updateCardWithUnpaywall(idx, data) {
               font-size:0.74rem;padding:2px 10px;border-radius:20px;text-decoration:none;font-weight:600;">
       &#x1F513; ${label}
     </a>`;
+}
+
+// ─── Gene Neighborhood Analysis ───────────────────────────────────────────────
+async function runNeighborhoodAnalysis(pmids, searchedGenes, apiKey) {
+  const panel = document.getElementById('neighborhood-panel');
+  panel.innerHTML = '<p class="nbr-loading">&#x1F9EC; Analyzing gene neighborhood…</p>';
+  panel.style.display = 'block';
+
+  // Sample up to 15 papers to stay within rate limits
+  const sample = pmids.slice(0, 15);
+
+  // Fetch linked gene IDs per paper, staggered at 180 ms
+  const results = await Promise.allSettled(
+    sample.map((pmid, i) => new Promise(resolve =>
+      setTimeout(() => fetchLinkedGenes(pmid, apiKey).then(resolve).catch(() => resolve([])), i * 180)
+    ))
+  );
+
+  // Tally co-mention frequency
+  const freqMap = {};
+  results.forEach(r => {
+    if (r.status !== 'fulfilled') return;
+    // dedupe per paper so one paper counts once per gene
+    [...new Set(r.value)].forEach(gid => {
+      freqMap[gid] = (freqMap[gid] || 0) + 1;
+    });
+  });
+
+  const sorted = Object.entries(freqMap).sort((a, b) => b[1] - a[1]).slice(0, 60);
+  if (!sorted.length) {
+    panel.innerHTML = '<p class="nbr-empty">No gene neighborhood data found for these papers.</p>';
+    return;
+  }
+
+  const summaries = await fetchGeneSymbols(sorted.map(([id]) => id), apiKey);
+
+  const searchedUpper = new Set(searchedGenes.map(g => g.toUpperCase()));
+  const neighbors = sorted
+    .map(([id, count]) => ({ id, count, ...(summaries[id] || {}) }))
+    .filter(g => g.symbol && !searchedUpper.has(g.symbol.toUpperCase()))
+    .slice(0, 35);
+
+  renderNeighborhood(neighbors, searchedGenes.length > 0 ? searchedGenes : ['these genes']);
+}
+
+async function fetchLinkedGenes(pmid, apiKey) {
+  const url = buildUrl('elink.fcgi', {
+    dbfrom: 'pubmed', db: 'gene', id: pmid, retmode: 'json', cmd: 'neighbor',
+    ...(apiKey && { api_key: apiKey }),
+  });
+  const res = await fetchJson(url);
+  const genes = [];
+  (res.linksets || []).forEach(ls =>
+    (ls.linksetdbs || []).forEach(ldb => {
+      if (ldb.dbto === 'gene') genes.push(...(ldb.links || []));
+    })
+  );
+  return genes;
+}
+
+async function fetchGeneSymbols(geneIds, apiKey) {
+  if (!geneIds.length) return {};
+  const url = buildUrl('esummary.fcgi', {
+    db: 'gene', id: geneIds.join(','), retmode: 'json',
+    ...(apiKey && { api_key: apiKey }),
+  });
+  const res = await fetchJson(url);
+  const map = {};
+  const result = res.result || {};
+  geneIds.forEach(id => {
+    const g = result[id];
+    if (!g || !g.name) return;
+    // Only include human genes
+    const taxid = g.organism?.taxid;
+    if (taxid && String(taxid) !== '9606') return;
+    map[id] = {
+      symbol: g.name,
+      name: g.description || '',
+      chromosome: g.chromosome || '',
+    };
+  });
+  return map;
+}
+
+function renderNeighborhood(neighbors, searchedGenes) {
+  const panel = document.getElementById('neighborhood-panel');
+  if (!neighbors.length) {
+    panel.innerHTML = '<p class="nbr-empty">No neighboring genes found in these papers.</p>';
+    return;
+  }
+
+  const maxCount = neighbors[0].count;
+  const chips = neighbors.map(g => {
+    const bar = Math.round((g.count / maxCount) * 100);
+    return `
+      <button class="nbr-chip" title="${escHtml(g.name)}${g.chromosome ? ' · chr' + escHtml(g.chromosome) : ''}"
+              onclick="addNeighborGene('${escHtml(g.symbol)}')">
+        <span class="nbr-symbol">${escHtml(g.symbol)}</span>
+        <span class="nbr-count">${g.count}</span>
+        <span class="nbr-bar" style="width:${bar}%"></span>
+      </button>`;
+  }).join('');
+
+  panel.innerHTML = `
+    <div class="nbr-header">
+      <span class="nbr-title">&#x1F9EC; Gene Neighborhood</span>
+      <span class="nbr-subtitle">Genes co-mentioned in these papers &mdash; click to add to search</span>
+    </div>
+    <div class="nbr-chips">${chips}</div>
+    <p class="nbr-note">Sorted by co-mention frequency &middot; human genes only &middot; excludes queried genes</p>
+  `;
+}
+
+function addNeighborGene(symbol) {
+  const el = document.getElementById('genes');
+  const existing = parseGenes(el.value).map(g => g.toUpperCase());
+  if (existing.includes(symbol.toUpperCase())) return;
+  el.value = el.value.trim() ? el.value.trim() + ', ' + symbol : symbol;
+  renderGeneChips();
+  // briefly flash the gene input
+  el.style.borderColor = '#3fb950';
+  setTimeout(() => { el.style.borderColor = ''; }, 900);
 }
 
 // ─── Render results ───────────────────────────────────────────────────────────
