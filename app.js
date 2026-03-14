@@ -35,6 +35,7 @@ async function runSearch() {
   setLoading(true);
   setStatus('Building query…');
   document.getElementById('results').style.display = 'none';
+  document.getElementById('neighborhood-panel').style.display = 'none';
 
   try {
     const genePart = genes.length
